@@ -1,0 +1,246 @@
+#include <iostream>
+#include <vector>
+#include <string>
+#include <sstream>
+#include <windows.h> // Для работы с COM-портом в Windows
+
+class SerialParser {
+private:
+    HANDLE hSerial;
+    std::vector<std::vector<double>> twoDimArray; // Двумерный массив для хранения истории
+    std::vector<double> currentArray; // Текущий одномерный массив
+    static const size_t ARRAY_SIZE = 8; // Ожидаемый размер массива
+    
+public:
+    SerialParser() : hSerial(INVALID_HANDLE_VALUE) {
+        currentArray.reserve(ARRAY_SIZE);
+    }
+    
+    ~SerialParser() {
+        closePort();
+    }
+    
+    // Функция для подключения к COM-порту
+    bool connect(const char* portName, DWORD baudRate = 9600) {
+        hSerial = CreateFileA(
+            portName,
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            0,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            0
+        );
+        
+        if (hSerial == INVALID_HANDLE_VALUE) {
+            std::cerr << "Ошибка открытия порта " << portName << std::endl;
+            return false;
+        }
+        
+        DCB dcbSerialParams = {0};
+        dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
+        
+        if (!GetCommState(hSerial, &dcbSerialParams)) {
+            std::cerr << "Ошибка получения параметров порта" << std::endl;
+            return false;
+        }
+        
+        dcbSerialParams.BaudRate = baudRate;
+        dcbSerialParams.ByteSize = 8;
+        dcbSerialParams.StopBits = ONESTOPBIT;
+        dcbSerialParams.Parity = NOPARITY;
+        
+        if (!SetCommState(hSerial, &dcbSerialParams)) {
+            std::cerr << "Ошибка установки параметров порта" << std::endl;
+            return false;
+        }
+        
+        // Настройка таймаутов
+        COMMTIMEOUTS timeouts = {0};
+        timeouts.ReadIntervalTimeout = 50;
+        timeouts.ReadTotalTimeoutConstant = 50;
+        timeouts.ReadTotalTimeoutMultiplier = 10;
+        timeouts.WriteTotalTimeoutConstant = 50;
+        timeouts.WriteTotalTimeoutMultiplier = 10;
+        
+        if (!SetCommTimeouts(hSerial, &timeouts)) {
+            std::cerr << "Ошибка установки таймаутов" << std::endl;
+            return false;
+        }
+        
+        std::cout << "Подключено к порту " << portName << " на скорости " << baudRate << std::endl;
+        return true;
+    }
+    
+    void closePort() {
+        if (hSerial != INVALID_HANDLE_VALUE) {
+            CloseHandle(hSerial);
+            hSerial = INVALID_HANDLE_VALUE;
+        }
+    }
+    
+    // Основная функция парсинга
+    bool parseSerialData() {
+        if (hSerial == INVALID_HANDLE_VALUE) {
+            std::cerr << "Порт не подключен!" << std::endl;
+            return false;
+        }
+        
+        char buffer[256];
+        DWORD bytesRead;
+        
+        // Чтение данных из порта
+        if (!ReadFile(hSerial, buffer, sizeof(buffer) - 1, &bytesRead, NULL)) {
+            std::cerr << "Ошибка чтения из порта" << std::endl;
+            return false;
+        }
+        
+        if (bytesRead > 0) {
+            buffer[bytesRead] = '\0'; // Добавляем нуль-терминатор
+            
+            // ============================================
+            // МЕСТО ДЛЯ СИНТАКСИЧЕСКОЙ ФИЛЬТРАЦИИ
+            // Вставьте здесь ваши фильтры для проверки данных
+            // Пример: проверка на наличие нечисловых символов
+            // ============================================
+            
+            // Пример базового фильтра (замените на свой):
+            if (!isValidData(buffer)) {
+                return false;
+            }
+            
+            return parseArrayFromString(buffer);
+        }
+        
+        return false;
+    }
+    
+    // Функция для проверки валидности данных (ЗАМЕНИТЕ НА СВОЮ ФИЛЬТРАЦИЮ)
+    bool isValidData(const char* data) {
+        std::string str(data);
+        
+        // Пример: проверяем, что строка содержит достаточно чисел
+        std::istringstream iss(str);
+        std::string token;
+        int count = 0;
+        
+        while (iss >> token) {
+            // Пытаемся преобразовать в число
+            char* end;
+            strtod(token.c_str(), &end);
+            if (end == token.c_str()) {
+                // Не удалось преобразовать
+                return false;
+            }
+            count++;
+        }
+        
+        return count >= ARRAY_SIZE;
+    }
+    
+    // Парсинг строки в массив чисел
+    bool parseArrayFromString(const char* data) {
+        std::string str(data);
+        std::istringstream iss(str);
+        std::vector<double> tempArray;
+        tempArray.reserve(ARRAY_SIZE);
+        
+        double value;
+        while (iss >> value && tempArray.size() < ARRAY_SIZE) {
+            tempArray.push_back(value);
+        }
+        
+        // Если получили полный массив
+        if (tempArray.size() == ARRAY_SIZE) {
+            // Сохраняем в текущий массив
+            currentArray = tempArray;
+            
+            // Добавляем в историю (двумерный массив)
+            twoDimArray.push_back(tempArray);
+            
+            // Ограничиваем размер истории (например, последние 100 измерений)
+            const size_t MAX_HISTORY = 100;
+            if (twoDimArray.size() > MAX_HISTORY) {
+                twoDimArray.erase(twoDimArray.begin());
+            }
+            
+            std::cout << "Получен новый массив: ";
+            for (double val : currentArray) {
+                std::cout << val << " ";
+            }
+            std::cout << std::endl;
+            
+            return true;
+        }
+        
+        return false;
+    }
+    
+    // Геттеры для доступа к данным
+    const std::vector<double>& getCurrentArray() const {
+        return currentArray;
+    }
+    
+    const std::vector<std::vector<double>>& getTwoDimArray() const {
+        return twoDimArray;
+    }
+    
+    // Функция для получения последних N массивов
+    std::vector<std::vector<double>> getLastArrays(size_t count) const {
+        if (count > twoDimArray.size()) {
+            count = twoDimArray.size();
+        }
+        
+        return std::vector<std::vector<double>>(
+            twoDimArray.end() - count,
+            twoDimArray.end()
+        );
+    }
+    
+    // Очистка истории
+    void clearHistory() {
+        twoDimArray.clear();
+    }
+};
+
+// Пример использования
+int main() {
+    SerialParser parser;
+    
+    // Подключение к COM-порту (замените "COM3" на ваш порт)
+    if (!parser.connect("COM3", 9600)) {
+        std::cerr << "Не удалось подключиться к порту!" << std::endl;
+        return 1;
+    }
+    
+    // Основной цикл обработки данных
+    while (true) {
+        // Попытка получить новые данные
+        if (parser.parseSerialData()) {
+            // Данные успешно получены и распарсены
+            
+            // Пример использования данных:
+            const auto& currentData = parser.getCurrentArray();
+            
+            // Вычисления с текущими данными
+            double sum = 0;
+            for (double value : currentData) {
+                sum += value;
+            }
+            double average = sum / currentData.size();
+            
+            std::cout << "Среднее значение: " << average << std::endl;
+            
+            // Можно также работать с историей
+            const auto& history = parser.getTwoDimArray();
+            if (history.size() > 0) {
+                std::cout << "Всего сохранено массивов: " << history.size() << std::endl;
+            }
+        }
+        
+        // Задержка для имитации интервала 2.5 секунды
+        Sleep(2500);
+    }
+    
+    return 0;
+}
