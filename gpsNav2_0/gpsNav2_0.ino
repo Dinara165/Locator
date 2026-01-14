@@ -39,22 +39,20 @@ struct Target {
   double lat, lon, alt;
 };
 
-// Создаем траекторию из 10 точек (дуга)
 const int NUM_TARGETS = 10;
 Target targets[NUM_TARGETS];
 
 void generateTrajectory() {
   double startLat = 43.2300, endLat = 43.2600;
   double startLon = 76.8800, endLon = 76.9200;
-  double maxAlt = 500.0; // Пик дуги
+  double maxAlt = 500.0;
 
   for (int i = 0; i < NUM_TARGETS; i++) {
-    double t = (double)i / (NUM_TARGETS - 1); // Параметр от 0 до 1
+    double t = (double)i / (NUM_TARGETS - 1);
     targets[i].lat = startLat + (endLat - startLat) * t;
     targets[i].lon = startLon + (endLon - startLon) * t;
-    // Парабола для высоты: h = maxAlt * (1 - (2t - 1)^2)
     targets[i].alt = maxAlt * (1.0 - pow(2.0 * t - 1.0, 2));
-    if (targets[i].alt < 10) targets[i].alt = 10; // Не ниже земли
+    if (targets[i].alt < 10) targets[i].alt = 10;
   }
 }
 
@@ -96,10 +94,20 @@ void computeAzElDist(double lat1, double lon1, double alt1, double lat2, double 
 }
 
 int calculateTargetServo(double targetVal, double gearRatio, int zeroPos, double backlash, int minA, int maxA, ServoState &state, bool isAz) {
+  // ВАЖНО: для азимута обновляем virtualAz с учетом кратчайшего пути через 0/360
+  if (isAz) {
+    double delta = targetVal - state.virtualAz;
+    delta = fmod(delta + 540.0, 360.0) - 180.0; // Кратчайший путь
+    state.virtualAz = fmod(state.virtualAz + delta, 360.0);
+    targetVal = state.virtualAz;
+  }
+
   double idealAngle = zeroPos + (targetVal / gearRatio);
   int newDir = (idealAngle > state.currentAngle) ? 1 : -1;
+  
   if (state.moveDir != 0 && newDir != state.moveDir) idealAngle += newDir * backlash;
   state.moveDir = newDir;
+  
   return constrain((int)round(idealAngle), minA, maxA);
 }
 
@@ -146,7 +154,6 @@ void trackTarget(int index) {
 
 void setup() {
   Serial.begin(9600);
-  // Настройки антенны: Lat, Lon, Alt, AzZero, VerZero, AzRatio, VerRatio, MinAz, MaxAz, MinVer, MaxVer, AzBack, VerBack, MinDist
   antenna = {43.238949, 76.889709, 100.0, 90, 90, 3.0, 1.0, 0, 180, 0, 180, 0.5, 0.3, 1.0};
   
   generateTrajectory();
@@ -170,7 +177,7 @@ void loop() {
   processServo(servoVer, stateVer);
 
   static unsigned long lastUpdate = 0;
-  if (millis() - lastUpdate > 3000) { // Каждые 3 секунды новая точка
+  if (millis() - lastUpdate > 3000) {
     trackTarget(currentTarget);
     currentTarget = (currentTarget + 1) % NUM_TARGETS;
     lastUpdate = millis();
