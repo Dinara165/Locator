@@ -27,9 +27,9 @@ struct ServoState {
 ServoState stateAz = {90, 90, 0, 0, 0.0};
 ServoState stateVer = {90, 90, 0, 0, 0.0};
 
-const int SERVO_BASE_DELAY = 15;
-const int SERVO_MIN_DELAY = 5;
-const double SERVO_ACCEL_THRESHOLD = 30.0;
+const int SERVO_BASE_DELAY = 20;
+const int SERVO_MIN_DELAY = 10;
+const double SERVO_ACCEL_THRESHOLD = 20.0;
 
 const double WGS84_A = 6378137.0;
 const double WGS84_F = 1.0 / 298.257223563;
@@ -39,15 +39,24 @@ struct Target {
   double lat, lon, alt;
 };
 
-const int NUM_TARGETS = 4;
-Target targets[NUM_TARGETS] = {
-  {43.2500, 76.9000, 200.0},
-  {43.2100, 76.8200, 100.0},
-  {43.2600, 76.8700, 500.0},
-  {43.2000, 76.9200, 50.0}
-};
+// Создаем траекторию из 10 точек (дуга)
+const int NUM_TARGETS = 10;
+Target targets[NUM_TARGETS];
 
-int currentTarget = 0;
+void generateTrajectory() {
+  double startLat = 43.2300, endLat = 43.2600;
+  double startLon = 76.8800, endLon = 76.9200;
+  double maxAlt = 500.0; // Пик дуги
+
+  for (int i = 0; i < NUM_TARGETS; i++) {
+    double t = (double)i / (NUM_TARGETS - 1); // Параметр от 0 до 1
+    targets[i].lat = startLat + (endLat - startLat) * t;
+    targets[i].lon = startLon + (endLon - startLon) * t;
+    // Парабола для высоты: h = maxAlt * (1 - (2t - 1)^2)
+    targets[i].alt = maxAlt * (1.0 - pow(2.0 * t - 1.0, 2));
+    if (targets[i].alt < 10) targets[i].alt = 10; // Не ниже земли
+  }
+}
 
 inline double deg2rad(double deg) { return deg * 0.017453292519943295; }
 inline double rad2deg(double rad) { return rad * 57.29577951308232; }
@@ -87,19 +96,10 @@ void computeAzElDist(double lat1, double lon1, double alt1, double lat2, double 
 }
 
 int calculateTargetServo(double targetVal, double gearRatio, int zeroPos, double backlash, int minA, int maxA, ServoState &state, bool isAz) {
-  if (isAz) {
-    double delta = targetVal - state.virtualAz;
-    delta = fmod(delta + 540.0, 360.0) - 180.0; 
-    state.virtualAz = fmod(state.virtualAz, 360.0);
-    targetVal = state.virtualAz;
-  }
-
   double idealAngle = zeroPos + (targetVal / gearRatio);
   int newDir = (idealAngle > state.currentAngle) ? 1 : -1;
-  
   if (state.moveDir != 0 && newDir != state.moveDir) idealAngle += newDir * backlash;
   state.moveDir = newDir;
-  
   return constrain((int)round(idealAngle), minA, maxA);
 }
 
@@ -117,33 +117,61 @@ void processServo(Servo &servo, ServoState &state) {
   }
 }
 
-void trackTarget(const Target &target) {
+void printDetailedStatus(int id, double dist, double az, double el) {
+  Serial.println(F(" TARGET UPDATE "));
+  Serial.print(F("Point: ")); Serial.print(id);
+  Serial.print(F(" | Dist: ")); Serial.print(dist, 1); Serial.println(F(" m"));
+  
+  Serial.print(F("REAL  -> Az: ")); Serial.print(az, 1); 
+  Serial.print(F("° | El: ")); Serial.print(el, 1); Serial.println(F("°"));
+  
+  Serial.print(F("SERVO -> Az: ")); Serial.print(stateAz.targetAngle);
+  Serial.print(F(" (now ")); Serial.print(stateAz.currentAngle);
+  Serial.print(F(") | Ver: ")); Serial.print(stateVer.targetAngle);
+  Serial.print(F(" (now ")); Serial.print(stateVer.currentAngle);
+  Serial.println(F(")"));
+  Serial.println();
+}
+
+void trackTarget(int index) {
   double az, el, dist;
   bool azV;
-  computeAzElDist(antenna.lat, antenna.lon, antenna.alt, target.lat, target.lon, target.alt, az, el, dist, azV);
+  computeAzElDist(antenna.lat, antenna.lon, antenna.alt, targets[index].lat, targets[index].lon, targets[index].alt, az, el, dist, azV);
   
   if (azV) stateAz.targetAngle = calculateTargetServo(az, antenna.azGearRatio, antenna.azZero, antenna.azBacklash, antenna.azMinAngle, antenna.azMaxAngle, stateAz, true);
   stateVer.targetAngle = calculateTargetServo(el, antenna.verGearRatio, antenna.verZero, antenna.verBacklash, antenna.verMinAngle, antenna.verMaxAngle, stateVer, false);
 
-  Serial.print("D:"); Serial.print(dist, 0); Serial.print(" Az:"); Serial.print(az, 1); Serial.print(" El:"); Serial.println(el, 1);
+  printDetailedStatus(index, dist, az, el);
 }
 
 void setup() {
   Serial.begin(9600);
+  // Настройки антенны: Lat, Lon, Alt, AzZero, VerZero, AzRatio, VerRatio, MinAz, MaxAz, MinVer, MaxVer, AzBack, VerBack, MinDist
   antenna = {43.238949, 76.889709, 100.0, 90, 90, 3.0, 1.0, 0, 180, 0, 180, 0.5, 0.3, 1.0};
+  
+  generateTrajectory();
+  
   servoAz.attach(SERVO_AZ_PIN);
   servoVer.attach(SERVO_VER_PIN);
-  stateAz.currentAngle = antenna.azZero; stateVer.currentAngle = antenna.verZero;
-  servoAz.write(antenna.azZero); servoVer.write(antenna.verZero);
-  delay(1000);
+  
+  stateAz.currentAngle = antenna.azZero; 
+  stateVer.currentAngle = antenna.verZero;
+  servoAz.write(antenna.azZero); 
+  servoVer.write(antenna.verZero);
+  
+  Serial.println(F("System Ready. Starting Trajectory..."));
+  delay(2000);
 }
+
+int currentTarget = 0;
 
 void loop() {
   processServo(servoAz, stateAz);
   processServo(servoVer, stateVer);
+
   static unsigned long lastUpdate = 0;
-  if (millis() - lastUpdate > 2000) {
-    trackTarget(targets[currentTarget]);
+  if (millis() - lastUpdate > 3000) { // Каждые 3 секунды новая точка
+    trackTarget(currentTarget);
     currentTarget = (currentTarget + 1) % NUM_TARGETS;
     lastUpdate = millis();
   }
